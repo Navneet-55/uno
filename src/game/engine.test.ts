@@ -238,7 +238,7 @@ describe('Deck Management', () => {
     expect(reshuffled).toHaveLength(3); // All except top card
     
     // Wild card should be reset to WILD color
-    const wildCard = reshuffled.find(c => c.type === CardType.WILD);
+    const wildCard = reshuffled.find(c => c.id === 'wild');
     expect(wildCard?.color).toBe(CardColor.WILD);
   });
 });

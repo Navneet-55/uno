@@ -2,52 +2,89 @@
 
 import { create } from 'zustand';
 import { subscribeWithSelector } from 'zustand/middleware';
+import { immer } from 'zustand/middleware/immer';
 import { 
   GameState, 
   GameSettings, 
   Player, 
-  PlayerType, 
-  GamePhase, 
-  GameDirection, 
-  CardColor,
   Card,
-  CardType
+  GameError,
+  InvalidMoveError,
+  GameStateError,
+  GAME_CONSTANTS,
+  isWildCard,
+  isValidNonWildColor
 } from './types';
-import { createDeck, shuffleDeck, dealInitialHands, drawCards, reshuffleDiscardPile } from './deck';
-import { applyCardEffect, getNextPlayerIndex, validateGameState, needsReshuffle } from './rules';
-import { chooseAIMove, chooseWildColor, validateAIMove } from './ai';
+import { 
+  createDeck, 
+  shuffleDeck, 
+  dealInitialHands, 
+  drawCards, 
+  reshuffleDiscardPile,
+  findStartingCard 
+} from './deck';
+import { 
+  applyCardEffect, 
+  getNextPlayerIndex, 
+  validateGameState, 
+  needsReshuffle,
+  canGameContinue,
+  getPlayableCards 
+} from './rules';
+import { 
+  chooseAIMove, 
+  chooseWildColor, 
+  validateAIMove,
+  createAIAnalytics,
+  type AIAnalytics 
+} from './ai';
 
 interface GameStore extends GameState {
   settings: GameSettings;
+  analytics: AIAnalytics;
+  isProcessingMove: boolean;
+  error: string | null;
   
   // Actions
-  startGame: () => void;
+  startGame: () => Promise<void>;
   resetGame: () => void;
-  playCard: (card: Card) => void;
-  drawCard: () => void;
+  playCard: (card: Card) => Promise<void>;
+  drawCard: () => Promise<void>;
   callUno: () => void;
-  selectWildColor: (color: CardColor) => void;
+  selectWildColor: (color: Exclude<Card['color'], 'wild'>) => void;
   updateSettings: (settings: Partial<GameSettings>) => void;
+  clearError: () => void;
   
   // Internal actions
-  processAITurn: () => void;
-  handleDrawPenalty: () => void;
+  processAITurn: () => Promise<void>;
+  handleDrawPenalty: () => Promise<void>;
   checkForReshuffle: () => void;
+  handleUnoMissed: () => void;
+  executeAIDraw: (player: Player) => Promise<void>;
+  executeAIPlay: (player: Player, card: Card) => Promise<void>;
+  forceAIDraw: (player: Player) => Promise<void>;
+  
+  // Utility getters
+  getCurrentPlayer: () => Player | null;
+  getPlayableCards: () => readonly Card[];
+  canCurrentPlayerPlay: () => boolean;
 }
 
 const initialGameState: GameState = {
   players: [],
   currentPlayerIndex: 0,
-  direction: GameDirection.CLOCKWISE,
-  phase: GamePhase.SETUP,
+  direction: 'clockwise',
+  phase: 'setup',
   drawPile: [],
   discardPile: [],
-  currentColor: CardColor.RED,
+  currentColor: 'red',
   drawPenalty: 0,
   lastAction: '',
   winner: null,
   unoCallTimeLeft: 0,
   pendingWildCard: null,
+  gameStartTime: Date.now(),
+  turnStartTime: Date.now(),
 };
 
 const defaultSettings: GameSettings = {
@@ -55,401 +92,410 @@ const defaultSettings: GameSettings = {
   strictWildDrawFour: false,
   aiOpponents: 3,
   animationIntensity: 'full',
+  autoCallUno: false,
+  turnTimeLimit: 0, // Unlimited
+  soundEnabled: true,
 };
 
 export const useGameStore = create<GameStore>()(
-  subscribeWithSelector((set, get) => ({
-    ...initialGameState,
-    settings: defaultSettings,
+  subscribeWithSelector(
+    immer((set, get) => ({
+      ...initialGameState,
+      settings: defaultSettings,
+      analytics: createAIAnalytics(),
+      isProcessingMove: false,
+      error: null,
 
-    startGame: () => {
-      const { settings } = get();
-      const deck = shuffleDeck(createDeck());
-      const playerCount = settings.aiOpponents + 1; // +1 for human player
-      
-      // Create players
-      const players: Player[] = [
-        {
-          id: 'human',
-          name: 'You',
-          type: PlayerType.HUMAN,
-          hand: [],
-          hasCalledUno: false,
-        }
-      ];
-      
-      for (let i = 0; i < settings.aiOpponents; i++) {
-        players.push({
-          id: `ai_${i}`,
-          name: `AI ${i + 1}`,
-          type: PlayerType.AI,
-          hand: [],
-          hasCalledUno: false,
-        });
-      }
-      
-      // Deal initial hands
-      const { hands, remainingDeck } = dealInitialHands(deck, playerCount);
-      players.forEach((player, index) => {
-        player.hand = hands[index];
-      });
-      
-      // Find first non-wild card for initial discard
-      let startCardIndex = 0;
-      while (startCardIndex < remainingDeck.length && 
-             (remainingDeck[startCardIndex].type === CardType.WILD || 
-              remainingDeck[startCardIndex].type === CardType.WILD_DRAW_FOUR)) {
-        startCardIndex++;
-      }
-      
-      if (startCardIndex >= remainingDeck.length) {
-        // Fallback: use a red 0 if no suitable card found
-        const fallbackCard: Card = {
-          id: 'fallback_start',
-          color: CardColor.RED,
-          type: CardType.NUMBER,
-          value: 0
-        };
-        set({
-          players,
-          drawPile: remainingDeck,
-          discardPile: [fallbackCard],
-          currentColor: CardColor.RED,
-          phase: GamePhase.PLAYING,
-          lastAction: 'Game started!',
-          currentPlayerIndex: 0,
-          direction: GameDirection.CLOCKWISE,
-          drawPenalty: 0,
-          winner: null,
-          unoCallTimeLeft: 0,
-          pendingWildCard: null,
-        });
-      } else {
-        const startCard = remainingDeck[startCardIndex];
-        const newDrawPile = [...remainingDeck];
-        newDrawPile.splice(startCardIndex, 1);
-        
-        set({
-          players,
-          drawPile: newDrawPile,
-          discardPile: [startCard],
-          currentColor: startCard.color,
-          phase: GamePhase.PLAYING,
-          lastAction: 'Game started!',
-          currentPlayerIndex: 0,
-          direction: GameDirection.CLOCKWISE,
-          drawPenalty: 0,
-          winner: null,
-          unoCallTimeLeft: 0,
-          pendingWildCard: null,
-        });
-      }
-      
-      // Process AI turn if AI goes first
-      setTimeout(() => {
-        const state = get();
-        if (state.players[state.currentPlayerIndex]?.type === PlayerType.AI) {
-          get().processAITurn();
-        }
-      }, 1000);
-    },
+      startGame: async () => {
+        try {
+          set(state => {
+            state.isProcessingMove = true;
+            state.error = null;
+          });
 
-    resetGame: () => {
-      set({
-        ...initialGameState,
-        settings: get().settings,
-      });
-    },
-
-    playCard: (card: Card) => {
-      const state = get();
-      
-      if (state.phase !== GamePhase.PLAYING) return;
-      
-      const currentPlayer = state.players[state.currentPlayerIndex];
-      if (!currentPlayer || currentPlayer.type !== PlayerType.HUMAN) return;
-      
-      // Verify card is in player's hand
-      const cardIndex = currentPlayer.hand.findIndex(c => c.id === card.id);
-      if (cardIndex === -1) return;
-      
-      // Handle draw penalty first
-      if (state.drawPenalty > 0) {
-        // Only allow Draw Two or Wild Draw Four to stack (if enabled)
-        if (state.settings.allowDrawStacking && 
-            (card.type === CardType.DRAW_TWO || card.type === CardType.WILD_DRAW_FOUR)) {
-          // Allow stacking
-        } else {
-          // Must draw penalty cards first
-          get().handleDrawPenalty();
-          return;
-        }
-      }
-      
-      // Remove card from player's hand
-      const newHand = [...currentPlayer.hand];
-      newHand.splice(cardIndex, 1);
-      
-      const updatedPlayers = [...state.players];
-      updatedPlayers[state.currentPlayerIndex] = {
-        ...currentPlayer,
-        hand: newHand,
-        hasCalledUno: false, // Reset UNO call status
-      };
-      
-      // Add card to discard pile
-      const newDiscardPile = [...state.discardPile, card];
-      
-      // Check for win condition
-      if (newHand.length === 0) {
-        set({
-          players: updatedPlayers,
-          discardPile: newDiscardPile,
-          winner: currentPlayer,
-          phase: GamePhase.GAME_OVER,
-          lastAction: `${currentPlayer.name} wins!`,
-        });
-        return;
-      }
-      
-      // Handle wild cards
-      if (card.type === CardType.WILD || card.type === CardType.WILD_DRAW_FOUR) {
-        set({
-          players: updatedPlayers,
-          discardPile: newDiscardPile,
-          phase: GamePhase.WILD_COLOR_SELECTION,
-          pendingWildCard: card,
-        });
-        return;
-      }
-      
-      // Apply card effects
-      const cardEffects = applyCardEffect(card, state);
-      const newCurrentColor = card.color;
-      
-      // Check if player should call UNO
-      if (newHand.length === 1) {
-        set({
-          players: updatedPlayers,
-          discardPile: newDiscardPile,
-          currentColor: newCurrentColor,
-          phase: GamePhase.UNO_CALL_WINDOW,
-          unoCallTimeLeft: 2000, // 2 seconds to call UNO
-          ...cardEffects,
-        });
-        
-        // Auto-penalty after timeout
-        setTimeout(() => {
-          const currentState = get();
-          if (currentState.phase === GamePhase.UNO_CALL_WINDOW) {
-            // Player failed to call UNO, apply penalty
-            get().checkForReshuffle();
-            const { drawnCards, remainingDeck } = drawCards(currentState.drawPile, 2);
-            
-            const penalizedPlayers = [...currentState.players];
-            const playerIndex = penalizedPlayers.findIndex(p => p.id === currentPlayer.id);
-            if (playerIndex !== -1) {
-              penalizedPlayers[playerIndex] = {
-                ...penalizedPlayers[playerIndex],
-                hand: [...penalizedPlayers[playerIndex].hand, ...drawnCards],
-              };
+          const { settings } = get();
+          const deck = shuffleDeck(createDeck());
+          const playerCount = Math.min(settings.aiOpponents + 1, GAME_CONSTANTS.MAX_PLAYERS);
+          
+          // Create players with immutable structure
+          const players: Player[] = [
+            {
+              id: 'human',
+              name: 'You',
+              type: 'human',
+              hand: [],
+              hasCalledUno: false,
+              isConnected: true,
             }
-            
-            set({
-              players: penalizedPlayers,
-              drawPile: remainingDeck,
-              phase: GamePhase.PLAYING,
-              lastAction: `${currentPlayer.name} failed to call UNO and drew 2 cards`,
+          ];
+          
+          for (let i = 0; i < settings.aiOpponents; i++) {
+            players.push({
+              id: `ai_${i}`,
+              name: `AI ${i + 1}`,
+              type: 'ai',
+              hand: [],
+              hasCalledUno: false,
+              isConnected: true,
+            });
+          }
+          
+          // Deal initial hands
+          const { hands, remainingDeck } = dealInitialHands(deck, playerCount);
+          players.forEach((player, index) => {
+            (player as any).hand = hands[index];
+          });
+          
+          // Find suitable starting card
+          const { startingCard, remainingDeck: finalDeck } = findStartingCard(remainingDeck);
+          
+          const gameStartTime = Date.now();
+          
+          set(state => {
+            state.players = Object.freeze(players);
+            state.drawPile = Object.freeze(finalDeck);
+            state.discardPile = Object.freeze([startingCard]);
+            state.currentColor = isWildCard(startingCard) ? 'red' : startingCard.color;
+            state.phase = 'playing';
+            state.lastAction = 'Game started!';
+            state.currentPlayerIndex = 0;
+            state.direction = 'clockwise';
+            state.drawPenalty = 0;
+            state.winner = null;
+            state.unoCallTimeLeft = 0;
+            state.pendingWildCard = null;
+            state.gameStartTime = gameStartTime;
+            state.turnStartTime = gameStartTime;
+            state.isProcessingMove = false;
+            state.analytics = createAIAnalytics();
+          });
+          
+          // Process AI turn if AI goes first
+          setTimeout(async () => {
+            const state = get();
+            if (state.players[state.currentPlayerIndex]?.type === 'ai') {
+              await get().processAITurn();
+            }
+          }, 1000);
+          
+        } catch (error) {
+          set(state => {
+            state.error = error instanceof Error ? error.message : 'Failed to start game';
+            state.isProcessingMove = false;
+          });
+        }
+      },
+
+      resetGame: () => {
+        set(state => {
+          Object.assign(state, {
+            ...initialGameState,
+            settings: state.settings,
+            analytics: createAIAnalytics(),
+            isProcessingMove: false,
+            error: null,
+          });
+        });
+      },
+
+      playCard: async (card: Card) => {
+        try {
+          const state = get();
+          
+          if (state.isProcessingMove) return;
+          if (state.phase !== 'playing') return;
+          
+          const currentPlayer = state.players[state.currentPlayerIndex];
+          if (!currentPlayer || currentPlayer.type !== 'human') return;
+          
+          set(draft => { draft.isProcessingMove = true; });
+          
+          // Verify card is in player's hand
+          const cardIndex = currentPlayer.hand.findIndex(c => c.id === card.id);
+          if (cardIndex === -1) {
+            throw new InvalidMoveError('Card not found in hand');
+          }
+          
+          // Handle draw penalty first
+          if (state.drawPenalty > 0) {
+            if (state.settings.allowDrawStacking && 
+                (card.type === 'draw_two' || card.type === 'wild_draw_four')) {
+              // Allow stacking
+            } else {
+              // Must draw penalty cards first
+              await get().handleDrawPenalty();
+              return;
+            }
+          }
+          
+          // Remove card from player's hand
+          const newHand = [...currentPlayer.hand];
+          newHand.splice(cardIndex, 1);
+          
+          set(state => {
+            const updatedPlayers = [...state.players];
+            updatedPlayers[state.currentPlayerIndex] = {
+              ...currentPlayer,
+              hand: Object.freeze(newHand),
+              hasCalledUno: false,
+            };
+            state.players = Object.freeze(updatedPlayers);
+            state.discardPile = Object.freeze([...state.discardPile, card]);
+          });
+          
+          // Check for win condition
+          if (newHand.length === 0) {
+            set(state => {
+              state.winner = currentPlayer;
+              state.phase = 'game_over';
+              state.lastAction = `${currentPlayer.name} wins!`;
+              state.isProcessingMove = false;
+            });
+            return;
+          }
+          
+          // Handle wild cards
+          if (isWildCard(card)) {
+            set(state => {
+              state.phase = 'wild_color_selection';
+              state.pendingWildCard = card;
+              state.isProcessingMove = false;
+            });
+            return;
+          }
+          
+          // Apply card effects
+          const cardEffects = applyCardEffect(card, state);
+          const newCurrentColor = isWildCard(card) ? state.currentColor : card.color;
+          
+          // Check if player should call UNO
+          if (newHand.length === 1) {
+            set(state => {
+              state.currentColor = newCurrentColor;
+              state.phase = 'uno_call_window';
+              state.unoCallTimeLeft = GAME_CONSTANTS.UNO_CALL_TIME_LIMIT;
+              state.isProcessingMove = false;
+              Object.assign(state, cardEffects);
             });
             
-            // Continue with AI turns
+            // Auto-penalty after timeout
             setTimeout(() => {
-              const state = get();
-              if (state.players[state.currentPlayerIndex]?.type === PlayerType.AI) {
-                get().processAITurn();
+              const currentState = get();
+              if (currentState.phase === 'uno_call_window') {
+                get().handleUnoMissed();
               }
-            }, 500);
+            }, GAME_CONSTANTS.UNO_CALL_TIME_LIMIT);
+            
+            return;
           }
-        }, 2000);
-        
-        return;
-      }
-      
-      // Normal card play
-      set({
-        players: updatedPlayers,
-        discardPile: newDiscardPile,
-        currentColor: newCurrentColor,
-        ...cardEffects,
-      });
-      
-      // Continue with AI turns
-      setTimeout(() => {
+          
+          // Normal card play
+          set(state => {
+            state.currentColor = newCurrentColor;
+            state.isProcessingMove = false;
+            Object.assign(state, cardEffects);
+          });
+          
+          // Continue with AI turns
+          setTimeout(async () => {
+            const state = get();
+            if (state.players[state.currentPlayerIndex]?.type === 'ai') {
+              await get().processAITurn();
+            }
+          }, 500);
+          
+        } catch (error) {
+          set(state => {
+            state.error = error instanceof Error ? error.message : 'Failed to play card';
+            state.isProcessingMove = false;
+          });
+        }
+      },
+
+      drawCard: async () => {
+        try {
+          const state = get();
+          
+          if (state.isProcessingMove) return;
+          if (state.phase !== 'playing') return;
+          
+          const currentPlayer = state.players[state.currentPlayerIndex];
+          if (!currentPlayer || currentPlayer.type !== 'human') return;
+          
+          set(draft => { draft.isProcessingMove = true; });
+          
+          // Handle draw penalty
+          if (state.drawPenalty > 0) {
+            await get().handleDrawPenalty();
+            return;
+          }
+          
+          get().checkForReshuffle();
+          
+          const { drawnCards, remainingDeck } = drawCards(state.drawPile, 1);
+          const drawnCard = drawnCards[0];
+          
+          const nextPlayerIndex = getNextPlayerIndex(
+            state.currentPlayerIndex,
+            state.players.length,
+            state.direction
+          );
+          
+          set(state => {
+            const updatedPlayers = [...state.players];
+            updatedPlayers[state.currentPlayerIndex] = {
+              ...currentPlayer,
+              hand: Object.freeze([...currentPlayer.hand, drawnCard]),
+            };
+            state.players = Object.freeze(updatedPlayers);
+            state.drawPile = Object.freeze(remainingDeck);
+            state.currentPlayerIndex = nextPlayerIndex;
+            state.lastAction = `${currentPlayer.name} drew a card`;
+            state.turnStartTime = Date.now();
+            state.isProcessingMove = false;
+          });
+          
+          // Continue with AI turns
+          setTimeout(async () => {
+            const newState = get();
+            if (newState.players[newState.currentPlayerIndex]?.type === 'ai') {
+              await get().processAITurn();
+            }
+          }, 500);
+          
+        } catch (error) {
+          set(state => {
+            state.error = error instanceof Error ? error.message : 'Failed to draw card';
+            state.isProcessingMove = false;
+          });
+        }
+      },
+
+      callUno: () => {
         const state = get();
-        if (state.players[state.currentPlayerIndex]?.type === PlayerType.AI) {
-          get().processAITurn();
-        }
-      }, 500);
-    },
-
-    drawCard: () => {
-      const state = get();
-      
-      if (state.phase !== GamePhase.PLAYING) return;
-      
-      const currentPlayer = state.players[state.currentPlayerIndex];
-      if (!currentPlayer || currentPlayer.type !== PlayerType.HUMAN) return;
-      
-      // Handle draw penalty
-      if (state.drawPenalty > 0) {
-        get().handleDrawPenalty();
-        return;
-      }
-      
-      get().checkForReshuffle();
-      
-      const { drawnCards, remainingDeck } = drawCards(state.drawPile, 1);
-      const drawnCard = drawnCards[0];
-      
-      const updatedPlayers = [...state.players];
-      updatedPlayers[state.currentPlayerIndex] = {
-        ...currentPlayer,
-        hand: [...currentPlayer.hand, drawnCard],
-      };
-      
-      // Move to next player
-      const nextPlayerIndex = getNextPlayerIndex(
-        state.currentPlayerIndex,
-        state.players.length,
-        state.direction
-      );
-      
-      set({
-        players: updatedPlayers,
-        drawPile: remainingDeck,
-        currentPlayerIndex: nextPlayerIndex,
-        lastAction: `${currentPlayer.name} drew a card`,
-      });
-      
-      // Continue with AI turns
-      setTimeout(() => {
-        const newState = get();
-        if (newState.players[newState.currentPlayerIndex]?.type === PlayerType.AI) {
-          get().processAITurn();
-        }
-      }, 500);
-    },
-
-    callUno: () => {
-      const state = get();
-      
-      if (state.phase !== GamePhase.UNO_CALL_WINDOW) return;
-      
-      const currentPlayer = state.players[state.currentPlayerIndex];
-      if (!currentPlayer || currentPlayer.type !== PlayerType.HUMAN) return;
-      
-      const updatedPlayers = [...state.players];
-      updatedPlayers[state.currentPlayerIndex] = {
-        ...currentPlayer,
-        hasCalledUno: true,
-      };
-      
-      set({
-        players: updatedPlayers,
-        phase: GamePhase.PLAYING,
-        lastAction: `${currentPlayer.name} called UNO!`,
-      });
-      
-      // Continue with AI turns
-      setTimeout(() => {
-        const state = get();
-        if (state.players[state.currentPlayerIndex]?.type === PlayerType.AI) {
-          get().processAITurn();
-        }
-      }, 500);
-    },
-
-    selectWildColor: (color: CardColor) => {
-      const state = get();
-      
-      if (state.phase !== GamePhase.WILD_COLOR_SELECTION || !state.pendingWildCard) return;
-      
-      const cardEffects = applyCardEffect(state.pendingWildCard, state);
-      
-      set({
-        currentColor: color,
-        phase: GamePhase.PLAYING,
-        pendingWildCard: null,
-        lastAction: `Wild color changed to ${color}`,
-        ...cardEffects,
-      });
-      
-      // Continue with AI turns
-      setTimeout(() => {
-        const state = get();
-        if (state.players[state.currentPlayerIndex]?.type === PlayerType.AI) {
-          get().processAITurn();
-        }
-      }, 500);
-    },
-
-    updateSettings: (newSettings: Partial<GameSettings>) => {
-      set({
-        settings: { ...get().settings, ...newSettings },
-      });
-    },
-
-    processAITurn: () => {
-      const state = get();
-      
-      if (state.phase !== GamePhase.PLAYING) return;
-      
-      const currentPlayer = state.players[state.currentPlayerIndex];
-      if (!currentPlayer || currentPlayer.type !== PlayerType.AI) return;
-      
-      // Handle draw penalty
-      if (state.drawPenalty > 0) {
-        get().handleDrawPenalty();
-        return;
-      }
-      
-      const move = chooseAIMove(currentPlayer, state, state.settings.strictWildDrawFour);
-      
-      if (!validateAIMove(move, currentPlayer, state)) {
-        console.error('Invalid AI move detected, forcing draw');
-        get().checkForReshuffle();
-        const { drawnCards, remainingDeck } = drawCards(state.drawPile, 1);
         
-        const updatedPlayers = [...state.players];
-        updatedPlayers[state.currentPlayerIndex] = {
-          ...currentPlayer,
-          hand: [...currentPlayer.hand, ...drawnCards],
-        };
+        if (state.phase !== 'uno_call_window') return;
         
-        const nextPlayerIndex = getNextPlayerIndex(
-          state.currentPlayerIndex,
-          state.players.length,
-          state.direction
-        );
+        const currentPlayer = state.players[state.currentPlayerIndex];
+        if (!currentPlayer || currentPlayer.type !== 'human') return;
         
-        set({
-          players: updatedPlayers,
-          drawPile: remainingDeck,
-          currentPlayerIndex: nextPlayerIndex,
-          lastAction: `${currentPlayer.name} drew a card`,
+        set(state => {
+          const updatedPlayers = [...state.players];
+          updatedPlayers[state.currentPlayerIndex] = {
+            ...currentPlayer,
+            hasCalledUno: true,
+          };
+          state.players = Object.freeze(updatedPlayers);
+          state.phase = 'playing';
+          state.lastAction = `${currentPlayer.name} called UNO!`;
         });
-        return;
-      }
-      
-      if (move.type === 'DRAW_CARD') {
-        get().checkForReshuffle();
-        const { drawnCards, remainingDeck } = drawCards(state.drawPile, 1);
         
-        const updatedPlayers = [...state.players];
-        updatedPlayers[state.currentPlayerIndex] = {
-          ...currentPlayer,
-          hand: [...currentPlayer.hand, ...drawnCards],
-        };
+        // Continue with AI turns
+        setTimeout(async () => {
+          const state = get();
+          if (state.players[state.currentPlayerIndex]?.type === 'ai') {
+            await get().processAITurn();
+          }
+        }, 500);
+      },
+
+      selectWildColor: (color: Exclude<Card['color'], 'wild'>) => {
+        const state = get();
+        
+        if (state.phase !== 'wild_color_selection' || !state.pendingWildCard) return;
+        
+        if (!isValidNonWildColor(color)) {
+          set(state => {
+            state.error = `Invalid color selection: ${color}`;
+          });
+          return;
+        }
+        
+        const cardEffects = applyCardEffect(state.pendingWildCard, state);
+        
+        set(state => {
+          state.currentColor = color;
+          state.phase = 'playing';
+          state.pendingWildCard = null;
+          state.lastAction = `Wild color changed to ${color}`;
+          Object.assign(state, cardEffects);
+        });
+        
+        // Continue with AI turns
+        setTimeout(async () => {
+          const state = get();
+          if (state.players[state.currentPlayerIndex]?.type === 'ai') {
+            await get().processAITurn();
+          }
+        }, 500);
+      },
+
+      updateSettings: (newSettings: Partial<GameSettings>) => {
+        set(state => {
+          state.settings = { ...state.settings, ...newSettings };
+        });
+      },
+
+      clearError: () => {
+        set(state => {
+          state.error = null;
+        });
+      },
+
+      processAITurn: async () => {
+        try {
+          const state = get();
+          
+          if (state.phase !== 'playing') return;
+          
+          const currentPlayer = state.players[state.currentPlayerIndex];
+          if (!currentPlayer || currentPlayer.type !== 'ai') return;
+          
+          // Handle draw penalty
+          if (state.drawPenalty > 0) {
+            await get().handleDrawPenalty();
+            return;
+          }
+          
+          const move = chooseAIMove(currentPlayer, state, state.settings.strictWildDrawFour);
+          
+          if (!validateAIMove(move, currentPlayer, state)) {
+            console.error('Invalid AI move detected, forcing draw');
+            await get().forceAIDraw(currentPlayer);
+            return;
+          }
+          
+          // Update analytics
+          set(state => {
+            state.analytics.movesPlayed++;
+            state.analytics.averageConfidence = 
+              (state.analytics.averageConfidence * (state.analytics.movesPlayed - 1) + move.confidence) / 
+              state.analytics.movesPlayed;
+          });
+          
+          if (move.type === 'DRAW_CARD') {
+            await get().executeAIDraw(currentPlayer);
+          } else if (move.type === 'PLAY_CARD' && move.card) {
+            await get().executeAIPlay(currentPlayer, move.card);
+          }
+          
+        } catch (error) {
+          console.error('Error in AI turn:', error);
+          const currentPlayer = get().players[get().currentPlayerIndex];
+          if (currentPlayer) {
+            await get().forceAIDraw(currentPlayer);
+          }
+        }
+      },
+
+      handleDrawPenalty: async () => {
+        const state = get();
+        const currentPlayer = state.players[state.currentPlayerIndex];
+        
+        if (state.drawPenalty === 0 || !currentPlayer) return;
+        
+        get().checkForReshuffle();
+        const { drawnCards, remainingDeck } = drawCards(state.drawPile, state.drawPenalty);
         
         const nextPlayerIndex = getNextPlayerIndex(
           state.currentPlayerIndex,
@@ -457,145 +503,214 @@ export const useGameStore = create<GameStore>()(
           state.direction
         );
         
-        set({
-          players: updatedPlayers,
-          drawPile: remainingDeck,
-          currentPlayerIndex: nextPlayerIndex,
-          lastAction: `${currentPlayer.name} drew a card`,
+        set(state => {
+          const updatedPlayers = [...state.players];
+          updatedPlayers[state.currentPlayerIndex] = {
+            ...currentPlayer,
+            hand: Object.freeze([...currentPlayer.hand, ...drawnCards]),
+          };
+          state.players = Object.freeze(updatedPlayers);
+          state.drawPile = Object.freeze(remainingDeck);
+          state.currentPlayerIndex = nextPlayerIndex;
+          state.drawPenalty = 0;
+          state.lastAction = `${currentPlayer.name} drew ${state.drawPenalty} penalty cards`;
+          state.turnStartTime = Date.now();
+        });
+        
+        // Continue with next player
+        setTimeout(async () => {
+          const newState = get();
+          if (newState.players[newState.currentPlayerIndex]?.type === 'ai') {
+            await get().processAITurn();
+          }
+        }, 1000);
+      },
+
+      checkForReshuffle: () => {
+        const state = get();
+        
+        if (needsReshuffle(state.drawPile, Math.max(1, state.drawPenalty))) {
+          if (state.discardPile.length <= 1) {
+            throw new GameStateError('Cannot reshuffle: not enough cards');
+          }
+          
+          const reshuffledCards = reshuffleDiscardPile(state.discardPile);
+          const topCard = state.discardPile[state.discardPile.length - 1];
+          
+          set(state => {
+            state.drawPile = Object.freeze([...state.drawPile, ...reshuffledCards]);
+            state.discardPile = Object.freeze([topCard]);
+            state.lastAction = 'Deck reshuffled';
+          });
+        }
+      },
+
+      // Helper methods
+      executeAIDraw: async (player: Player) => {
+        get().checkForReshuffle();
+        const state = get();
+        const { drawnCards, remainingDeck } = drawCards(state.drawPile, 1);
+        
+        const nextPlayerIndex = getNextPlayerIndex(
+          state.currentPlayerIndex,
+          state.players.length,
+          state.direction
+        );
+        
+        set(state => {
+          const updatedPlayers = [...state.players];
+          const playerIndex = updatedPlayers.findIndex(p => p.id === player.id);
+          if (playerIndex !== -1) {
+            updatedPlayers[playerIndex] = {
+              ...player,
+              hand: Object.freeze([...player.hand, ...drawnCards]),
+            };
+          }
+          state.players = Object.freeze(updatedPlayers);
+          state.drawPile = Object.freeze(remainingDeck);
+          state.currentPlayerIndex = nextPlayerIndex;
+          state.lastAction = `${player.name} drew a card`;
+          state.turnStartTime = Date.now();
         });
         
         // Continue AI chain
-        setTimeout(() => {
+        setTimeout(async () => {
           const newState = get();
-          if (newState.players[newState.currentPlayerIndex]?.type === PlayerType.AI) {
-            get().processAITurn();
+          if (newState.players[newState.currentPlayerIndex]?.type === 'ai') {
+            await get().processAITurn();
           }
         }, 1000);
-        
-      } else if (move.type === 'PLAY_CARD' && move.card) {
-        // AI plays card
-        const cardIndex = currentPlayer.hand.findIndex(c => c.id === move.card!.id);
-        const newHand = [...currentPlayer.hand];
+      },
+
+      executeAIPlay: async (player: Player, card: Card) => {
+        const state = get();
+        const cardIndex = player.hand.findIndex(c => c.id === card.id);
+        const newHand = [...player.hand];
         newHand.splice(cardIndex, 1);
         
-        const updatedPlayers = [...state.players];
-        updatedPlayers[state.currentPlayerIndex] = {
-          ...currentPlayer,
-          hand: newHand,
-          hasCalledUno: newHand.length === 1, // AI auto-calls UNO
-        };
-        
-        const newDiscardPile = [...state.discardPile, move.card];
+        set(state => {
+          const updatedPlayers = [...state.players];
+          const playerIndex = updatedPlayers.findIndex(p => p.id === player.id);
+          if (playerIndex !== -1) {
+            updatedPlayers[playerIndex] = {
+              ...player,
+              hand: Object.freeze(newHand),
+              hasCalledUno: newHand.length === 1, // AI auto-calls UNO
+            };
+          }
+          state.players = Object.freeze(updatedPlayers);
+          state.discardPile = Object.freeze([...state.discardPile, card]);
+        });
         
         // Check for win
         if (newHand.length === 0) {
-          set({
-            players: updatedPlayers,
-            discardPile: newDiscardPile,
-            winner: currentPlayer,
-            phase: GamePhase.GAME_OVER,
-            lastAction: `${currentPlayer.name} wins!`,
+          set(state => {
+            state.winner = player;
+            state.phase = 'game_over';
+            state.lastAction = `${player.name} wins!`;
           });
           return;
         }
         
         // Handle wild cards
-        if (move.card.type === CardType.WILD || move.card.type === CardType.WILD_DRAW_FOUR) {
-          const chosenColor = chooseWildColor(currentPlayer.hand);
-          const cardEffects = applyCardEffect(move.card, state);
+        if (isWildCard(card)) {
+          const chosenColor = chooseWildColor(player.hand, state);
+          const cardEffects = applyCardEffect(card, state);
           
-          set({
-            players: updatedPlayers,
-            discardPile: newDiscardPile,
-            currentColor: chosenColor,
-            lastAction: `${currentPlayer.name} played ${move.card.type} and chose ${chosenColor}`,
-            ...cardEffects,
+          set(state => {
+            state.currentColor = chosenColor;
+            state.lastAction = `${player.name} played ${card.type} and chose ${chosenColor}`;
+            state.analytics.wildCardsPlayed++;
+            Object.assign(state, cardEffects);
           });
         } else {
-          const cardEffects = applyCardEffect(move.card, state);
+          const cardEffects = applyCardEffect(card, state);
           
-          set({
-            players: updatedPlayers,
-            discardPile: newDiscardPile,
-            currentColor: move.card.color,
-            ...cardEffects,
+          set(state => {
+            state.currentColor = card.color;
+            Object.assign(state, cardEffects);
           });
         }
         
         // Continue AI chain
-        setTimeout(() => {
+        setTimeout(async () => {
           const newState = get();
-          if (newState.players[newState.currentPlayerIndex]?.type === PlayerType.AI) {
-            get().processAITurn();
+          if (newState.players[newState.currentPlayerIndex]?.type === 'ai') {
+            await get().processAITurn();
           }
         }, 1000);
-      }
-    },
+      },
 
-    handleDrawPenalty: () => {
-      const state = get();
-      const currentPlayer = state.players[state.currentPlayerIndex];
-      
-      if (state.drawPenalty === 0 || !currentPlayer) return;
-      
-      get().checkForReshuffle();
-      const { drawnCards, remainingDeck } = drawCards(state.drawPile, state.drawPenalty);
-      
-      const updatedPlayers = [...state.players];
-      updatedPlayers[state.currentPlayerIndex] = {
-        ...currentPlayer,
-        hand: [...currentPlayer.hand, ...drawnCards],
-      };
-      
-      const nextPlayerIndex = getNextPlayerIndex(
-        state.currentPlayerIndex,
-        state.players.length,
-        state.direction
-      );
-      
-      set({
-        players: updatedPlayers,
-        drawPile: remainingDeck,
-        currentPlayerIndex: nextPlayerIndex,
-        drawPenalty: 0,
-        lastAction: `${currentPlayer.name} drew ${state.drawPenalty} penalty cards`,
-      });
-      
-      // Continue with next player
-      setTimeout(() => {
-        const newState = get();
-        if (newState.players[newState.currentPlayerIndex]?.type === PlayerType.AI) {
-          get().processAITurn();
-        }
-      }, 1000);
-    },
+      forceAIDraw: async (player: Player) => {
+        await get().executeAIDraw(player);
+      },
 
-    checkForReshuffle: () => {
-      const state = get();
-      
-      if (needsReshuffle(state.drawPile, Math.max(1, state.drawPenalty))) {
-        if (state.discardPile.length <= 1) {
-          console.error('Cannot reshuffle: not enough cards');
-          return;
-        }
+      handleUnoMissed: () => {
+        const state = get();
+        const currentPlayer = state.players[state.currentPlayerIndex];
+        if (!currentPlayer) return;
         
-        const reshuffledCards = reshuffleDiscardPile(state.discardPile);
-        const topCard = state.discardPile[state.discardPile.length - 1];
+        get().checkForReshuffle();
+        const { drawnCards, remainingDeck } = drawCards(state.drawPile, 2);
         
-        set({
-          drawPile: [...state.drawPile, ...reshuffledCards],
-          discardPile: [topCard],
-          lastAction: 'Deck reshuffled',
+        set(state => {
+          const updatedPlayers = [...state.players];
+          const playerIndex = updatedPlayers.findIndex(p => p.id === currentPlayer.id);
+          if (playerIndex !== -1) {
+            updatedPlayers[playerIndex] = {
+              ...currentPlayer,
+              hand: Object.freeze([...currentPlayer.hand, ...drawnCards]),
+            };
+          }
+          state.players = Object.freeze(updatedPlayers);
+          state.drawPile = Object.freeze(remainingDeck);
+          state.phase = 'playing';
+          state.lastAction = `${currentPlayer.name} failed to call UNO and drew 2 cards`;
         });
-      }
-    },
-  }))
+        
+        // Continue with AI turns
+        setTimeout(async () => {
+          const state = get();
+          if (state.players[state.currentPlayerIndex]?.type === 'ai') {
+            await get().processAITurn();
+          }
+        }, 500);
+      },
+
+      // Utility getters
+      getCurrentPlayer: () => {
+        const state = get();
+        return state.players[state.currentPlayerIndex] || null;
+      },
+
+      getPlayableCards: () => {
+        const state = get();
+        const currentPlayer = state.getCurrentPlayer();
+        if (!currentPlayer || currentPlayer.type !== 'human') return [];
+        
+        const topCard = state.discardPile[state.discardPile.length - 1];
+        if (!topCard) return [];
+        
+        return getPlayableCards(
+          currentPlayer.hand,
+          topCard,
+          state.currentColor,
+          state.settings.strictWildDrawFour
+        );
+      },
+
+      canCurrentPlayerPlay: () => {
+        const state = get();
+        return state.getPlayableCards().length > 0;
+      },
+    }))
+  )
 );
 
 // Validate game state on every update (dev only)
-if (process.env.NODE_ENV === 'development') {
+if (typeof window !== 'undefined' && import.meta.env?.DEV) {
   useGameStore.subscribe((state) => {
-    if (state.phase === GamePhase.PLAYING) {
+    if (state.phase === 'playing' && canGameContinue(state)) {
       const errors = validateGameState(state);
       if (errors.length > 0) {
         console.error('Game state validation errors:', errors);
