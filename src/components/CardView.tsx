@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { motion } from 'framer-motion';
-import { Card, CardColor, CardType } from '../game/types';
+import { Card, isNumberCard, isActionCard, isWildCard } from '../game/types';
 import { clsx } from 'clsx';
 
 interface CardViewProps {
@@ -17,11 +17,11 @@ interface CardViewProps {
 }
 
 const colorClasses = {
-  [CardColor.RED]: 'bg-uno-red text-white',
-  [CardColor.YELLOW]: 'bg-uno-yellow text-black',
-  [CardColor.GREEN]: 'bg-uno-green text-white',
-  [CardColor.BLUE]: 'bg-uno-blue text-white',
-  [CardColor.WILD]: 'bg-gradient-to-br from-uno-red via-uno-yellow via-uno-green to-uno-blue text-white',
+  red: 'bg-uno-red text-white',
+  yellow: 'bg-uno-yellow text-black',
+  green: 'bg-uno-green text-white',
+  blue: 'bg-uno-blue text-white',
+  wild: 'bg-gradient-to-br from-uno-red via-uno-yellow via-uno-green to-uno-blue text-white',
 };
 
 const sizeClasses = {
@@ -31,19 +31,19 @@ const sizeClasses = {
 };
 
 const cardTypeIcons = {
-  [CardType.SKIP]: '⊘',
-  [CardType.REVERSE]: '↻',
-  [CardType.DRAW_TWO]: '+2',
-  [CardType.WILD]: 'W',
-  [CardType.WILD_DRAW_FOUR]: '+4',
+  skip: '⊘',
+  reverse: '↻',
+  draw_two: '+2',
+  wild: 'W',
+  wild_draw_four: '+4',
 };
 
 const cardTypePatterns = {
-  [CardType.SKIP]: '⊘⊘⊘',
-  [CardType.REVERSE]: '↻↻↻',
-  [CardType.DRAW_TWO]: '++',
-  [CardType.WILD]: '★★★',
-  [CardType.WILD_DRAW_FOUR]: '+4+4',
+  skip: '⊘⊘⊘',
+  reverse: '↻↻↻',
+  draw_two: '++',
+  wild: '★★★',
+  wild_draw_four: '+4+4',
 };
 
 export const CardView: React.FC<CardViewProps> = ({
@@ -63,7 +63,7 @@ export const CardView: React.FC<CardViewProps> = ({
   };
 
   const cardContent = showBack ? (
-    <div className="w-full h-full bg-uno-black rounded-lg border-2 border-gray-300 flex items-center justify-center">
+    <div className="w-full h-full bg-gray-800 rounded-lg border-2 border-gray-300 flex items-center justify-center">
       <div className="text-white font-bold text-lg">UNO</div>
     </div>
   ) : (
@@ -89,11 +89,11 @@ export const CardView: React.FC<CardViewProps> = ({
           handleClick();
         }
       }}
-      aria-label={`${card.color} ${card.type === CardType.NUMBER ? card.value : card.type} card${isPlayable ? ', playable' : ''}`}
+      aria-label={`${card.color} ${isNumberCard(card) ? card.value : card.type} card${isPlayable ? ', playable' : ''}`}
     >
       {/* Card content */}
       <div className="flex flex-col items-center justify-center h-full">
-        {card.type === CardType.NUMBER ? (
+        {isNumberCard(card) ? (
           <>
             <div className="text-2xl font-black">{card.value}</div>
             {size === 'large' && (
@@ -117,17 +117,17 @@ export const CardView: React.FC<CardViewProps> = ({
       </div>
 
       {/* Color-blind support patterns */}
-      {card.color !== CardColor.WILD && size === 'large' && (
+      {card.color !== 'wild' && size === 'large' && (
         <div className="absolute top-1 right-1 text-xs opacity-50">
-          {card.color === CardColor.RED && '●'}
-          {card.color === CardColor.YELLOW && '▲'}
-          {card.color === CardColor.GREEN && '■'}
-          {card.color === CardColor.BLUE && '♦'}
+          {card.color === 'red' && '●'}
+          {card.color === 'yellow' && '▲'}
+          {card.color === 'green' && '■'}
+          {card.color === 'blue' && '♦'}
         </div>
       )}
 
       {/* Action card patterns for accessibility */}
-      {card.type !== CardType.NUMBER && size === 'large' && (
+      {!isNumberCard(card) && size === 'large' && (
         <div className="absolute bottom-1 left-1 text-xs opacity-30">
           {cardTypePatterns[card.type]}
         </div>

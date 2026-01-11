@@ -3,8 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useGameStore } from '../game/store';
-import { getPlayableCards } from '../game/rules';
-import { Card, GamePhase, PlayerType } from '../game/types';
+import { Card, isWildCard } from '../game/types';
 import { Hand } from './Hand';
 import { Pile } from './Pile';
 import { ColorPickerModal } from './ColorPickerModal';
@@ -21,6 +20,8 @@ export const GameTable: React.FC = () => {
     discardPile,
     currentColor,
     settings,
+    error,
+    isProcessingMove,
     playCard,
     drawCard,
     callUno,
@@ -28,29 +29,33 @@ export const GameTable: React.FC = () => {
     startGame,
     resetGame,
     updateSettings,
+    clearError,
+    getCurrentPlayer,
+    getPlayableCards,
   } = useGameStore();
 
   const [showSettings, setShowSettings] = useState(false);
   const [invalidCardShake, setInvalidCardShake] = useState<string | null>(null);
 
-  const humanPlayer = players.find(p => p.type === PlayerType.HUMAN);
-  const aiPlayers = players.filter(p => p.type === PlayerType.AI);
+  const humanPlayer = players.find(p => p.type === 'human');
+  const aiPlayers = players.filter(p => p.type === 'ai');
   const topCard = discardPile[discardPile.length - 1];
   
-  const playableCards = humanPlayer && topCard 
-    ? getPlayableCards(humanPlayer.hand, topCard, currentColor, settings.strictWildDrawFour)
-    : [];
-
-  const isHumanTurn = players[currentPlayerIndex]?.type === PlayerType.HUMAN;
+  const playableCards = getPlayableCards();
+  const isHumanTurn = getCurrentPlayer()?.type === 'human';
 
   // Handle card click
-  const handleCardClick = (card: Card) => {
-    if (!isHumanTurn || phase !== GamePhase.PLAYING) return;
+  const handleCardClick = async (card: Card) => {
+    if (!isHumanTurn || phase !== 'playing' || isProcessingMove) return;
     
     const isPlayable = playableCards.some(pc => pc.id === card.id);
     
     if (isPlayable) {
-      playCard(card);
+      try {
+        await playCard(card);
+      } catch (error) {
+        console.error('Error playing card:', error);
+      }
     } else {
       // Show shake animation for invalid card
       setInvalidCardShake(card.id);
@@ -60,10 +65,22 @@ export const GameTable: React.FC = () => {
 
   // Auto-start game on mount if no players
   useEffect(() => {
-    if (players.length === 0) {
-      startGame();
+    if (players.length === 0 && phase === 'setup') {
+      startGame().catch(error => {
+        console.error('Failed to start game:', error);
+      });
     }
-  }, [players.length, startGame]);
+  }, [players.length, phase, startGame]);
+
+  // Clear errors after a delay
+  useEffect(() => {
+    if (error) {
+      const timer = setTimeout(() => {
+        clearError();
+      }, 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [error, clearError]);
 
   // Keyboard support
   useEffect(() => {
@@ -72,11 +89,11 @@ export const GameTable: React.FC = () => {
         setShowSettings(false);
       }
       
-      if (phase === GamePhase.UNO_CALL_WINDOW && (e.key === 'u' || e.key === 'U')) {
+      if (phase === 'uno_call_window' && (e.key === 'u' || e.key === 'U')) {
         callUno();
       }
       
-      if (isHumanTurn && phase === GamePhase.PLAYING && e.key === 'd') {
+      if (isHumanTurn && phase === 'playing' && e.key === 'd') {
         drawCard();
       }
     };
@@ -85,7 +102,7 @@ export const GameTable: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [phase, isHumanTurn, callUno, drawCard]);
 
-  if (phase === GamePhase.SETUP || players.length === 0) {
+  if (phase === 'setup' || players.length === 0) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-green-400 via-blue-500 to-purple-600 flex items-center justify-center">
         <motion.div
@@ -101,7 +118,8 @@ export const GameTable: React.FC = () => {
     );
   }
 
-  if (phase === GamePhase.GAME_OVER) {
+  if (phase === 'game_over') {
+    const winner = useGameStore.getState().winner;
     return (
       <div className="min-h-screen bg-gradient-to-br from-green-400 via-blue-500 to-purple-600 flex items-center justify-center">
         <motion.div
@@ -124,7 +142,7 @@ export const GameTable: React.FC = () => {
             className="mb-6"
           >
             <div className="text-xl font-bold text-green-600 mb-2">
-              Winner: {useGameStore.getState().winner?.name}
+              Winner: {winner?.name}
             </div>
             <div className="text-gray-600">
               Congratulations on a great game!
@@ -164,6 +182,28 @@ export const GameTable: React.FC = () => {
           </button>
         </div>
 
+        {/* Error Display */}
+        <AnimatePresence>
+          {error && (
+            <motion.div
+              initial={{ opacity: 0, y: -50 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -50 }}
+              className="mb-4 bg-red-500 text-white p-3 rounded-lg shadow-lg"
+            >
+              <div className="flex justify-between items-center">
+                <span>{error}</span>
+                <button
+                  onClick={clearError}
+                  className="ml-2 text-white hover:text-gray-200"
+                >
+                  ×
+                </button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 h-[calc(100vh-120px)]">
           {/* Left Side - AI Players */}
           <div className="lg:col-span-1 space-y-4">
@@ -200,7 +240,7 @@ export const GameTable: React.FC = () => {
                 <Pile
                   type="draw"
                   cards={drawPile}
-                  onDrawClick={isHumanTurn && phase === GamePhase.PLAYING ? drawCard : undefined}
+                  onDrawClick={isHumanTurn && phase === 'playing' && !isProcessingMove ? drawCard : undefined}
                 />
                 <Pile
                   type="discard"
@@ -236,7 +276,7 @@ export const GameTable: React.FC = () => {
 
       {/* Modals */}
       <ColorPickerModal
-        isOpen={phase === GamePhase.WILD_COLOR_SELECTION}
+        isOpen={phase === 'wild_color_selection'}
         onColorSelect={selectWildColor}
         onClose={() => {}} // Color selection is required
       />
@@ -259,6 +299,23 @@ export const GameTable: React.FC = () => {
             className="fixed bottom-4 left-1/2 transform -translate-x-1/2 bg-red-500 text-white px-4 py-2 rounded-lg shadow-lg z-40"
           >
             Card not playable!
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Processing Indicator */}
+      <AnimatePresence>
+        {isProcessingMove && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
+          >
+            <div className="bg-white rounded-lg p-6 flex items-center gap-3">
+              <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-500"></div>
+              <span>Processing move...</span>
+            </div>
           </motion.div>
         )}
       </AnimatePresence>

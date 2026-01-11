@@ -2,14 +2,14 @@
 
 import React from 'react';
 import { motion } from 'framer-motion';
-import { Card, CardColor } from '../game/types';
+import { Card } from '../game/types';
 import { CardView } from './CardView';
 import { clsx } from 'clsx';
 
 interface PileProps {
   type: 'draw' | 'discard';
-  cards: Card[];
-  currentColor?: CardColor;
+  cards: readonly Card[];
+  currentColor?: Exclude<Card['color'], 'wild'>;
   onDrawClick?: () => void;
   className?: string;
 }
@@ -42,7 +42,7 @@ export const Pile: React.FC<PileProps> = ({
                 {cardCount > 2 && (
                   <div className="absolute -top-1 -left-1 opacity-30">
                     <CardView
-                      card={{ id: 'stack-3', color: 'red' as any, type: 'number' as any }}
+                      card={{ id: 'stack-3', color: 'red', type: 'number', value: 0 } as Card}
                       showBack={true}
                       size="medium"
                       animate={false}
@@ -52,7 +52,7 @@ export const Pile: React.FC<PileProps> = ({
                 {cardCount > 1 && (
                   <div className="absolute -top-0.5 -left-0.5 opacity-60">
                     <CardView
-                      card={{ id: 'stack-2', color: 'red' as any, type: 'number' as any }}
+                      card={{ id: 'stack-2', color: 'red', type: 'number', value: 0 } as Card}
                       showBack={true}
                       size="medium"
                       animate={false}
@@ -60,7 +60,7 @@ export const Pile: React.FC<PileProps> = ({
                   </div>
                 )}
                 <CardView
-                  card={{ id: 'stack-1', color: 'red' as any, type: 'number' as any }}
+                  card={{ id: 'stack-1', color: 'red', type: 'number', value: 0 } as Card}
                   showBack={true}
                   size="medium"
                   onClick={onDrawClick}
@@ -97,11 +97,10 @@ export const Pile: React.FC<PileProps> = ({
             className={clsx(
               'w-4 h-4 rounded-full border-2 border-gray-300',
               {
-                'bg-uno-red': currentColor === CardColor.RED,
-                'bg-uno-yellow': currentColor === CardColor.YELLOW,
-                'bg-uno-green': currentColor === CardColor.GREEN,
-                'bg-uno-blue': currentColor === CardColor.BLUE,
-                'bg-gradient-to-r from-uno-red via-uno-yellow via-uno-green to-uno-blue': currentColor === CardColor.WILD,
+                'bg-uno-red': currentColor === 'red',
+                'bg-uno-yellow': currentColor === 'yellow',
+                'bg-uno-green': currentColor === 'green',
+                'bg-uno-blue': currentColor === 'blue',
               }
             )}
             aria-label={`Current color: ${currentColor}`}
@@ -135,7 +134,7 @@ export const Pile: React.FC<PileProps> = ({
           <>
             <div className="absolute -bottom-1 -right-1 opacity-30 -z-10">
               <CardView
-                card={{ id: 'discard-stack-1', color: 'red' as any, type: 'number' as any }}
+                card={{ id: 'discard-stack-1', color: 'red', type: 'number', value: 0 } as Card}
                 showBack={true}
                 size="medium"
                 animate={false}
@@ -144,7 +143,7 @@ export const Pile: React.FC<PileProps> = ({
             {cardCount > 2 && (
               <div className="absolute -bottom-2 -right-2 opacity-15 -z-20">
                 <CardView
-                  card={{ id: 'discard-stack-2', color: 'red' as any, type: 'number' as any }}
+                  card={{ id: 'discard-stack-2', color: 'red', type: 'number', value: 0 } as Card}
                   showBack={true}
                   size="medium"
                   animate={false}

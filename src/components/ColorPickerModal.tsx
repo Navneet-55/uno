@@ -2,20 +2,19 @@
 
 import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { CardColor } from '../game/types';
 import { clsx } from 'clsx';
 
 interface ColorPickerModalProps {
   isOpen: boolean;
-  onColorSelect: (color: CardColor) => void;
+  onColorSelect: (color: 'red' | 'yellow' | 'green' | 'blue') => void;
   onClose: () => void;
 }
 
 const colorOptions = [
-  { color: CardColor.RED, label: 'Red', bgClass: 'bg-uno-red', icon: '●' },
-  { color: CardColor.YELLOW, label: 'Yellow', bgClass: 'bg-uno-yellow', icon: '▲' },
-  { color: CardColor.GREEN, label: 'Green', bgClass: 'bg-uno-green', icon: '■' },
-  { color: CardColor.BLUE, label: 'Blue', bgClass: 'bg-uno-blue', icon: '♦' },
+  { color: 'red' as const, label: 'Red', bgClass: 'bg-uno-red', icon: '●' },
+  { color: 'yellow' as const, label: 'Yellow', bgClass: 'bg-uno-yellow', icon: '▲' },
+  { color: 'green' as const, label: 'Green', bgClass: 'bg-uno-green', icon: '■' },
+  { color: 'blue' as const, label: 'Blue', bgClass: 'bg-uno-blue', icon: '♦' },
 ];
 
 export const ColorPickerModal: React.FC<ColorPickerModalProps> = ({
@@ -23,7 +22,7 @@ export const ColorPickerModal: React.FC<ColorPickerModalProps> = ({
   onColorSelect,
   onClose,
 }) => {
-  const handleColorSelect = (color: CardColor) => {
+  const handleColorSelect = (color: 'red' | 'yellow' | 'green' | 'blue') => {
     onColorSelect(color);
     onClose();
   };
@@ -66,7 +65,7 @@ export const ColorPickerModal: React.FC<ColorPickerModalProps> = ({
                     'p-4 rounded-lg text-white font-bold text-lg flex flex-col items-center gap-2 transition-all duration-200 hover:shadow-lg',
                     bgClass,
                     {
-                      'text-black': color === CardColor.YELLOW,
+                      'text-black': color === 'yellow',
                     }
                   )}
                   aria-label={`Select ${label} color`}

@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { GameState, GamePhase, GameDirection, Player } from '../game/types';
+import { GameState } from '../game/types';
 import { clsx } from 'clsx';
 
 interface HUDProps {
@@ -20,8 +20,8 @@ export const HUD: React.FC<HUDProps> = ({
 }) => {
   const currentPlayer = gameState.players[gameState.currentPlayerIndex];
   const isHumanTurn = currentPlayer?.type === 'human';
-  const canDraw = gameState.phase === GamePhase.PLAYING && isHumanTurn && gameState.drawPenalty === 0;
-  const canCallUno = gameState.phase === GamePhase.UNO_CALL_WINDOW && isHumanTurn;
+  const canDraw = gameState.phase === 'playing' && isHumanTurn && gameState.drawPenalty === 0;
+  const canCallUno = gameState.phase === 'uno_call_window' && isHumanTurn;
 
   return (
     <div className={clsx('bg-white rounded-lg shadow-lg p-4', className)}>
@@ -41,7 +41,7 @@ export const HUD: React.FC<HUDProps> = ({
         <div className="flex items-center gap-2">
           <div className="text-sm font-medium text-gray-600">Direction:</div>
           <motion.div
-            animate={{ rotate: gameState.direction === GameDirection.CLOCKWISE ? 0 : 180 }}
+            animate={{ rotate: gameState.direction === 'clockwise' ? 0 : 180 }}
             transition={{ duration: 0.3 }}
             className="text-lg"
           >

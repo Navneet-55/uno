@@ -7,8 +7,8 @@ import { CardView } from './CardView';
 import { clsx } from 'clsx';
 
 interface HandProps {
-  cards: Card[];
-  playableCards: Card[];
+  cards: readonly Card[];
+  playableCards: readonly Card[];
   onCardClick?: (card: Card) => void;
   isCurrentPlayer?: boolean;
   playerName?: string;
@@ -50,7 +50,7 @@ export const Hand: React.FC<HandProps> = ({
                 transition={{ delay: index * 0.05 }}
               >
                 <CardView
-                  card={{ id: `back-${index}`, color: 'red' as any, type: 'number' as any }}
+                  card={{ id: `back-${index}`, color: 'red', type: 'number', value: 0 } as Card}
                   showBack={true}
                   size="small"
                   animate={false}
